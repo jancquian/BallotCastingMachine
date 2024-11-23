@@ -3,7 +3,6 @@ from sslib import shamir
 
 class KeyRecoveryComponent:
     def __init__(self, shares):
-        print(f"despues: {shares}")
         self.required_shares = shares[0]['Rs']
         self.shares = shares
         self.prime_mod = shares[0]['prime_mod']
