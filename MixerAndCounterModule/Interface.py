@@ -5,6 +5,7 @@ import threading
 import time
 # Para widgets
 import tkinter as tk
+import traceback
 # Para tablas y scrollbars
 from tkinter import ttk
 # Para importar archivos
@@ -28,7 +29,6 @@ class Interface:
         # Configuración del frame
         # Ventana raiz
         self._root = root
-        self._root.bind("<Configure>", self.ajustar_labels)
         self._root.title("Módulo de Mezcla y Conteo")
         # Obtiene el tamaño de la pantalla
         self.screen_width = root.winfo_screenwidth()
@@ -40,6 +40,7 @@ class Interface:
         # Parametrizacion de textos
         self.title_font = ("Ubuntu Sans Mono Regular", 12, "bold")
         self.subtitle_font = ("Ubuntu Sans Mono Regular", 11)
+        self.winner_font = ("Ubuntu Sans Mono Regular", 24, "bold")
 
         # Notebook para las diferentes pestañas
         self.notebook = ttk.Notebook(self._root)
@@ -412,6 +413,10 @@ class Interface:
         self.counter_of_votes_in_favor_dict = {}
         self.count_of_votes_in_favor_label = []
         self.dynamic_plain_votes_table_height = 0
+
+
+        #Ya que se construyeron todos los objetos
+        self._root.bind("<Configure>", self.ajustar_labels)
 
 
 
@@ -1014,13 +1019,13 @@ class Interface:
                             # Actualiza la interfaz
                             self._root.update_idletasks()
                             # Espera un segundo
-                            time.sleep(1)
+                            #time.sleep(1)
                             # Deja de resaltar la fila del candidato votado
                             _list[1].config(font=self.subtitle_font)
                             _list[2].config(font=self.subtitle_font)
                             # Espera 100ms para dejar que se aprecie como vuelve a su estado original
                             # (por si el candidato tiene votos seguidos)
-                            time.sleep(100 / 1000)
+                            #time.sleep(100 / 1000)
                             # Como ya encontro el label indicado, break
                             break
 
@@ -1029,10 +1034,41 @@ class Interface:
 
                 if (idx + 1) == total_votes:
                     self.plain_votes_table.selection_remove(row_id)
+                    just_one_winner, number, winner = self.get_winner()
+                    if just_one_winner:
+                        winner_label = tk.Label(
+                            self.decrypt_frame,
+                            text=f"Ganó {winner} con {number} votos a favor.",
+                            font=self.winner_font
+                        )
+                        winner_label.grid(row=next(row_df), column=0, pady=self.default_pady)
+                    else:
+                        empate_label = tk.Label(
+                            self.decrypt_frame,
+                            text=f"Empate entre {len(winner)} candidatos.",
+                            font=self.winner_font
+                        )
+                        empate_label.grid(row=next(row_df), column=0, pady=self.default_pady)
+
+                        empate_label = tk.Label(
+                            self.decrypt_frame,
+                            text=f"No hay mayoría de votos para un solo candidato:",
+                            font=self.title_font
+                        )
+                        empate_label.grid(row=next(row_df), column=0)
+
+                        for i in winner:
+                            lbl = self.create_label(
+                                self.decrypt_frame,
+                                bg="#F0F0F0",
+                                text=f"{i} obtuvo {number} votos a favor.",
+                                font=self.title_font
+                            )
+                            lbl.grid(row=next(row_df), column=0)
             messagebox.showinfo("", "Descifrado de votos finalizado.")
 
         except Exception as e:
-            messagebox.showerror("Error al descifrar los votos", f": {e}")
+            messagebox.showerror("Error al descifrar los votos", f": {e} in line {traceback.format_exc()}")
             progress_window.after(0, progress_window.destroy)
 
     def create_label(self, parent, bg, text, font):
@@ -1198,6 +1234,23 @@ class Interface:
             # Verificar si el widget es un Label
             if isinstance(widget, tk.Label):
                 widget.config(wraplength=nuevo_ancho)
+
+    def get_winner(self):
+        winner = []
+        greater_count = 0
+
+        for candidate in self.counter_of_votes_in_favor_dict:
+            if self.counter_of_votes_in_favor_dict[f"{candidate}"] > greater_count:
+                greater_count = self.counter_of_votes_in_favor_dict[f"{candidate}"]
+                winner.clear()
+                winner.append(candidate)
+            elif self.counter_of_votes_in_favor_dict[f"{candidate}"] == greater_count:
+                winner.append(candidate)
+        if len(winner) == 1:
+            return True, greater_count, winner[0]
+        else:
+            return False, greater_count, winner
+
 
 if __name__ == "__main__":
     #root es la ventana
