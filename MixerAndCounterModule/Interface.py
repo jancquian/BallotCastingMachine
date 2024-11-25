@@ -1,23 +1,31 @@
-# para widgets
+# Para convertir cadenas en su clase original
 import ast
+# Para evitar bloquear el hilo principal
 import threading
+# Para widgets
 import tkinter as tk
-
-# para Frame, Notebook
+# Para tablas y scrollbars
 from tkinter import ttk
+# Para importar archivos
 from tkinter import filedialog
+# Para mostrar mensajes al usuario en una ventana emergente
 from tkinter import messagebox
+# Para descifrar
 from Decryptor import Decryptor
+# Conversiones de formatos
 from Exporter import Exporter as Exp
+# Verificar firmas
 import BlindSignatureVerifier as BSV
+# Para reconstruir la clave privada del esquema de cifrado
 from KeyRecoveryComponent import KeyRecoveryComponent as KRC
+# Manejador de la base de datos
 import BookWorm as BW
 
 class Interface:
     #___________________________________________________________________________________________________________________
     def __init__(self, root):
         # Configuración del frame
-        # Recibe el objeto de la clase tk
+        # Ventana raiz
         self._root = root
         self._root.title("Módulo de Mezcla y Conteo")
         self._root.geometry("1720x920")
@@ -46,8 +54,8 @@ class Interface:
         self.vault_sign = None
         self.pre_count_table = None # Treeview
         self.votes_table = None # Treeview
-        self.votes = None # Votos de la bóveda
-        self.pre_count = None # Registros de preconteo
+        self.votes = None # Lista de votos recuperados de la bd
+        self.pre_count = None # Lista de registros de preconteo
 
         # Tablas de datos descifrados
         self.plain_pre_count_table = None
@@ -62,7 +70,7 @@ class Interface:
         self.is_vault_sign_imported = False
         self.is_signature_imported = False
 
-        # Necesario para descifrado
+        # Necesarios para descifrado
         self.are_shares_imported = False
 
         # _______________________________________________________________________
@@ -79,7 +87,7 @@ class Interface:
         self.vault_name = "vault.db"
         self.vault_sign_name = "vault_sign.pem"
         self.puk_signature_name = "BsgPukChaum.pem"
-        self.first_share_name = "EkgPrkElGamal*Of*.pem"  ## Verificar que se usa
+        self.shares_names = "EkgPrkElGamal*Of*.pem"
 
         # Variables con las leyendas para importar archivos
         self.vault_request_default = f"Debe importar \"{self.vault_name}\""
@@ -195,6 +203,7 @@ class Interface:
             text="",
             font=("Arial", 14),
         )
+        # Se renderiza (grid) al cargar datos y verificar firmas
 
         #===============================================================================================================
         row_value = next(row_vsf)
@@ -486,7 +495,7 @@ class Interface:
 
     def import_share(self):
         file_path = filedialog.askopenfilename(
-            title="Seleccionar EkgPrkElGamal*Of*.pem",
+            title=f"Seleccionar {self.shares_names}",
             filetypes=[("Share Files", "EkgPrkElGamal*Of*.pem")]
         )
         if file_path:
@@ -506,10 +515,8 @@ class Interface:
             #self.notebook.tab(2, state='disabled')
             self.notebook.select(0)
 
-
     def goto_pre_count(self):
         self.notebook.select(2)
-
 
     def load_db_data(self, progress_window, info_label, progress_bar, percentage_label):
         try:
@@ -520,37 +527,45 @@ class Interface:
 
             # Se carga la clave pública de firma
             self.public_key = Exp.import_key(self.puk_sign_path)
-            # Se crea instancia de BookWorm para obtener registros de al bd
+            # Se crea instancia de BookWorm para obtener registros de la bd
             bw = BW.BookWorm(self.vault_path)
-            print(self.vault_path)
+            # Se obtienen los registros de las tablas de la base de datos
             self.votes = bw.fetch_records("votos")
             self.pre_count = bw.fetch_records("conteo")
 
-            # Verifica si se obtuvieron registros
+            # Verifica si no se obtuvieron registros
             if not self.votes and not self.pre_count:
+                messagebox.showinfo(
+                    "Bóveda vacía",
+                    "No se encontraron votos ni registros de preconteo en la base de datos."
+                )
                 progress_window.destroy()
                 return
 
+            # Lista de votos vacía
             if not self.votes:
-                print("No se encontraron registros en la tabla 'votos'.")
+                messagebox.showinfo("", "No se encontraron votos en la base de datos.")
 
+            # Lista de preconteo vacía
             if not self.pre_count:
-                print("No se encontraron registros en la tabla 'conteo'.")
+                messagebox.showinfo("", "No se encontraron registros de preconteo en la base de datos.")
 
-            # Configura progreso total
+            # Se obtiene la cantidad de registros obtenidos para calcular el preconteo
             total_candidates = len(self.pre_count)
             total_votes = len(self.votes)
             total_records = total_candidates + total_votes
 
-            total_progress = None
+            # Inicialización de la variable donde se guardará el progreso parcial
+            actual_progress = None
             verifier = BSV.BlindSignatureVerifier(self.public_key)
 
-            # Limpia datos pasados
-            for row in self.votes_table.get_children():
-                self.votes_table.delete(row)
-
+            # Limpia datos pasados de la tabla de preconteo
             for row in self.pre_count_table.get_children():
                 self.pre_count_table.delete(row)
+
+            # Limpia datos pasados de la tabla de votos
+            for row in self.votes_table.get_children():
+                self.votes_table.delete(row)
 
             # Verificacion de la firma de la bóveda
             self.vault_sign = Exp.import_key(self.vault_sign_path)["sign"]
@@ -568,6 +583,7 @@ class Interface:
                     font=self.subtitle_font,
                     text="La firma de la bóveda es inválida",
                 )
+            #Se coloca el widget con el resultado de verificación
             self.vault_verification_result_label.grid(column=0, row=self.vault_ver_res_lbl_row, columnspan=3,
                                                       pady=self.default_pady)
 
@@ -578,40 +594,55 @@ class Interface:
             # Inserta registros en la tabla 'preconteo' mostrando el progreso
             for idx, pre_count_table_data in enumerate(self.pre_count):
                 candidate, result, signature = pre_count_table_data[0], pre_count_table_data[1], pre_count_table_data[2]
-                self.pre_count_table.insert("", "end", values=(candidate, result, signature, ""))
 
-                ephemeral_progress = (idx + 1) * 100 / total_candidates
+                row_id = self.pre_count_table.insert("", "end", values=(candidate, result, signature, ""))
+                # Mantiene enfocada la última fila has
+                self.pre_count_table.selection_set(row_id)  # Selecciona la fila
+                self.pre_count_table.see(row_id)  # Se desplaza para mostrarla
+
                 progress = (idx + 1) * 100 / total_records
-                if (idx+1) == total_candidates:
-                    total_progress = progress
                 progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+
+                # Si se está en la última iteración
+                if (idx+1) == total_candidates:
+                    # Se guarda el progreso actual
+                    actual_progress = progress
+                    # Elimina el enfoque del registro
+                    self.pre_count_table.selection_remove(row_id)
+
 
             progress_window.title("Cargando registros (2/2)")
             info_label.config(text="Cargando los votos cifrados. Por favor, espere...")
 
             for idx, vote in enumerate(self.votes):
                 candidate, vote, signature = vote[0], vote[1], vote[2]
-                self.votes_table.insert("", "end", values=(candidate, vote, signature, ""))
 
-                ephemeral_progress = (idx + 1) * 100 / total_votes
-                progress = total_progress + ((idx + 1) * 100 / total_records)
-                if (idx + 1) == total_votes:
-                    total_progress = progress
+                row_id = self.votes_table.insert("", "end", values=(candidate, vote, signature, ""))
+                # Mantiene enfocada la última fila has
+                self.votes_table.selection_set(row_id)  # Selecciona la fila
+                self.votes_table.see(row_id)  # Se desplaza para mostrarla
+
+                progress = actual_progress + ((idx + 1) * 100 / total_records)
                 progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
 
+                if (idx+1) == total_votes:
+                    # Elimina el enfoque del registro
+                    self.votes_table.selection_remove(row_id)
 
-            total_progress = 0
-            # Verifica firmas de preconteo
+            # Se reinicia el progreso del primer for
+            actual_progress = 0
+
             progress_window.title("Verificando integridad (1/2)")
             info_label.config(text="Verificando las firmas de los datos de preconteo. Por favor, espere...")
 
+            # Verifica firmas de preconteo
             for idx, item_id in enumerate(self.pre_count_table.get_children()):
                 pre_count = self.pre_count[idx]
                 candidate, result, signature = pre_count[0], pre_count[1], pre_count[2]
 
                 int_signature = Exp.b64_to_dictionary(signature)['sign']
                 dict_result = Exp.b64_to_dictionary(result)
-                #dict -> tupla -> str
+                # dict -> tuple -> str
                 result_available_to_be_verified = str((dict_result['alpha'], dict_result['betha']))
 
                 is_valid = "Válido" if verifier.verify(int_signature, result_available_to_be_verified) else "Inválido"
@@ -619,26 +650,32 @@ class Interface:
 
                 current_values = self.pre_count_table.item(item_id, "values")
                 updated_values = current_values[:-1] + (is_valid,)
-                self.pre_count_table.item(item_id, values=updated_values, tags=(tag,))
 
-                ephemeral_progress = (idx + 1) * 100 / total_candidates
-                progress = total_progress + ((idx + 1) * 100 / total_records)
-                if (idx + 1) == total_candidates:
-                    total_progress = progress
+                self.pre_count_table.item(item_id, values=updated_values, tags=(tag,))
+                self.pre_count_table.selection_set(item_id)
+                self.pre_count_table.see(item_id)
+
+                progress = actual_progress + ((idx + 1) * 100 / total_records)
                 progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+
+                # Si es la última iteración
+                if (idx + 1) == total_candidates:
+                    # Guarda el progreso parcial
+                    actual_progress = progress
+                    self.pre_count_table.selection_remove(item_id)
 
             print("Datos cargados en la tabla 'preconteo'.")
 
-            # Carga los votos
             progress_window.title("Verificando integridad (2/2)")
             info_label.config(text="Verificando integridad de los votos. Por favor, espere...")
 
+            # Verificación de firmas de votos
             for idx, item_id in enumerate(self.votes_table.get_children()):
                 votes = self.votes[idx]
                 id, vote, signature = votes[0], votes[1], votes[2]
                 int_signature = Exp.b64_to_dictionary(signature)['sign']
                 dict_vote = Exp.b64_to_dictionary(vote)
-                vote_available_to_be_verified = str(tuple([dict_vote['alpha'], dict_vote['betha']]))
+                vote_available_to_be_verified = str((dict_vote['alpha'], dict_vote['betha']))
                 verifier = BSV.BlindSignatureVerifier(self.public_key)
                 is_valid = "Válido" if verifier.verify(int_signature, vote_available_to_be_verified) else "Inválido"
 
@@ -648,14 +685,17 @@ class Interface:
                 current_values = self.votes_table.item(item_id, "values")
                 updated_values = current_values[:-1] + (is_valid,)
                 self.votes_table.item(item_id, values=updated_values, tags=(tag,))
+                # Mantiene enfocada la última fila has
+                self.votes_table.selection_set(item_id)  # Selecciona la fila
+                self.votes_table.see(item_id)  # Se desplaza para mostrarla
 
-                ephemeral_progress = (idx + 1) * 100 / total_votes
-                progress = total_progress + ((idx + 1) * 100 / total_records)
+                progress = actual_progress + ((idx + 1) * 100 / total_records)
+                if (idx + 1) == total_votes:
+                    self.votes_table.selection_remove(item_id)
                 progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
 
             print("Datos cargados en la tabla 'votos'.")
 
-            progress_window.destroy()  # Cierra la ventana de progreso cuando termina
             # Habilitar las pestañas "Verificación de Firmas" y "Mezcla y Conteo"
             self.notebook.tab(2, state='normal')
 
@@ -706,15 +746,26 @@ class Interface:
                 self.secret = recovery_component.recover_secret()
                 print(self.secret)
 
-                self._root.after(0, lambda: messagebox.showinfo("Éxito", "Clave reconstruida exitosamente."))
+                self._root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Éxito",
+                        "Clave reconstruida exitosamente."
+                    )
+                )
 
                 self._root.after(0, lambda: self.create_progress_window(
                     target_function=self.load_plain_pre_count_data,
                     win_title="Insertando datos en la tabla"
                 ))
             except Exception as e:
-                self._root.after(0, lambda: messagebox.showerror("Error",
-                                                                 f"Se produjo un error al recuperar el secreto: {e}"))
+                self._root.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Error",
+                        f"Se produjo un error al recuperar el secreto: {e}"
+                    )
+                )
 
         # Ejecuta en un hilo separado
         threading.Thread(target=task, daemon=True).start()
@@ -727,9 +778,14 @@ class Interface:
 
             total_candidates = len(self.pre_count)
 
+            # Limpia los datos cargados anteriormente
+            for row in self.plain_pre_count_table.get_children():
+                self.plain_pre_count_table.delete(row)
+
             progress_window.title("Cargando datos en texto claro")
             info_label.config(text="Cargando datos de preconteo en texto claro...")
 
+            row_id = None
             for idx, pre_count_table in enumerate(self.pre_count):
                 id_, result, signature = pre_count_table[0], pre_count_table[1], pre_count_table[2]
 
@@ -744,10 +800,15 @@ class Interface:
                 plain_pre_count = dec.decipher(result_available_to_be_decrypted)
 
                 if is_valid == "Válido":
-                    self.plain_pre_count_table.insert("", "end", values=(id_, plain_pre_count))
+                    row_id = self.plain_pre_count_table.insert("", "end", values=(id_, plain_pre_count))
+                    self.plain_pre_count_table.selection_set(row_id)
+                    self.plain_pre_count_table.see(row_id)
 
                 progress = (idx + 1) * 100 / total_candidates
                 progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+
+                if (idx + 1) == total_candidates:
+                    self.plain_pre_count_table.selection_remove(row_id)
 
             accept_pre_count_container = tk.Frame(self.pre_count_frame, bg="#F0F0F0")
             accept_pre_count_container.grid(row=6, column=0, pady=10, padx=500)
@@ -831,6 +892,8 @@ class Interface:
             self.notebook.tab(3, state='normal')
             self.notebook.select(3)
             total_votes = len(self.votes)
+
+            row_id = None
             for idx, vote in enumerate(self.votes):
                 id_, vote, signature = vote[0], vote[1], vote[2]
 
@@ -847,10 +910,15 @@ class Interface:
 
                 if is_valid == "Válido":
                     # Insertar el registro con la etiqueta correspondiente
-                    self.plain_votes_table.insert("", "end", values=(id_, plain_vote))
+                    row_id = self.plain_votes_table.insert("", "end", values=(id_, plain_vote))
+                    self.plain_votes_table.selection_set(row_id)
+                    self.plain_votes_table.see(row_id)
 
                 progress = (idx + 1) * 100 / total_votes
                 progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+
+                if (idx + 1) == total_votes:
+                    self.plain_votes_table.selection_remove(row_id)
             messagebox.showinfo("", "Descifrado de votos finalizado.")
 
         except Exception as e:
@@ -883,7 +951,8 @@ class Interface:
             )
 
         # Configuración de encabezados y columnas
-        for col, heading, width, minwidth, stretch_config in zip(columns, headings, column_widths, column_min_widths, stretch_configs):
+        for col, heading, width, minwidth, stretch_config in zip(columns, headings, column_widths, column_min_widths,
+                                                                 stretch_configs):
             table.heading(col, text=heading)
             table.column(col, anchor="center", width=width, minwidth=minwidth, stretch=stretch_config)
 
