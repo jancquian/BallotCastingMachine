@@ -1019,13 +1019,13 @@ class Interface:
                             # Actualiza la interfaz
                             self._root.update_idletasks()
                             # Espera un segundo
-                            #time.sleep(1)
+                            time.sleep(1)
                             # Deja de resaltar la fila del candidato votado
                             _list[1].config(font=self.subtitle_font)
                             _list[2].config(font=self.subtitle_font)
                             # Espera 100ms para dejar que se aprecie como vuelve a su estado original
                             # (por si el candidato tiene votos seguidos)
-                            #time.sleep(100 / 1000)
+                            time.sleep(100 / 1000)
                             # Como ya encontro el label indicado, break
                             break
 
