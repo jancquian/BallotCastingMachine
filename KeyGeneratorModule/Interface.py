@@ -1,6 +1,7 @@
 import threading
 import random
 import string
+import hashlib
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import ttk
@@ -313,10 +314,13 @@ class Interface:
         required_shares = int(self._widget_collection["spt_req_shr"].get())
         self._ksc.set_required_shares(required_shares)
         self._ksc.set_distribiuted_shares(total_shares)
+        digest_hex = hashlib.sha3_256(str(prk).encode('utf-8')).hexdigest()
+        digest_dict = {"digesto": digest_hex}
         shares = self._ksc.split_secret(self._exp.dictionary_to_json(prk))
         for share in shares:
             # Se obtiene los pem de los fragmentos de la llave privada de ElGamal
             self._exp.export_key(share, prk_ekg_path, "EkgPrkElGamal{0}Of{1}".format(share['x'], total_shares))
+        self._exp.export_key(digest_dict, prk_ekg_path, "EkgPrkElGamalDigest")
 
         # Se obtiene el pem de la llave pública de ElGamal
         self._exp.export_key(puk, puk_ekg_path, "EkgPukElGamal")
