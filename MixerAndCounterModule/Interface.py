@@ -2,6 +2,7 @@
 import ast
 # Para evitar bloquear el hilo principal
 import threading
+import time
 # Para widgets
 import tkinter as tk
 # Para tablas y scrollbars
@@ -27,8 +28,13 @@ class Interface:
         # Configuración del frame
         # Ventana raiz
         self._root = root
+        self._root.bind("<Configure>", self.ajustar_labels)
         self._root.title("Módulo de Mezcla y Conteo")
-        self._root.geometry("1720x920")
+        # Obtiene el tamaño de la pantalla
+        self.screen_width = root.winfo_screenwidth()
+        self.screen_height = root.winfo_screenheight()
+        self._root.geometry(f"{self.screen_width}x{self.screen_height}+0+0")
+        self._root.minsize(width=1080, height=720)
         self._root.resizable(True, True)
 
         # Parametrizacion de textos
@@ -314,6 +320,7 @@ class Interface:
         self.shares_container = tk.Frame(self.pre_count_frame, bg="#F0F0F0")
         self.shares_container.grid_columnconfigure(0, weight=4)
         for i in range(1, 5): #[1,4]
+            # Configuración del grid para tener tamaños uniformes en las columnas 1-4 (no la columna 0)
             self.shares_container.grid_columnconfigure(i, weight=1, uniform="0")
         self.shares_container.grid(row=next(row_pcf), column=0, columnspan=1, padx=30, pady=self.default_pady, sticky="nsew")
 
@@ -397,6 +404,14 @@ class Interface:
         ################################################################################################################
         # Objetos para el tab de descifrado
         self.decrypt_frame = None
+        self.info_decrypt_frame_label = None
+        self.info_count_table_label = None
+        self.count_container = None
+        self.info_plain_votes_table_label = None
+        self.plain_votes_table = None
+        self.counter_of_votes_in_favor_dict = {}
+        self.count_of_votes_in_favor_label = []
+        self.dynamic_plain_votes_table_height = 0
 
 
 
@@ -638,7 +653,7 @@ class Interface:
             # Verifica firmas de preconteo
             for idx, item_id in enumerate(self.pre_count_table.get_children()):
                 pre_count = self.pre_count[idx]
-                candidate, result, signature = pre_count[0], pre_count[1], pre_count[2]
+                result, signature = pre_count[1], pre_count[2]
 
                 int_signature = Exp.b64_to_dictionary(signature)['sign']
                 dict_result = Exp.b64_to_dictionary(result)
@@ -672,7 +687,7 @@ class Interface:
             # Verificación de firmas de votos
             for idx, item_id in enumerate(self.votes_table.get_children()):
                 votes = self.votes[idx]
-                id, vote, signature = votes[0], votes[1], votes[2]
+                vote, signature = votes[1], votes[2]
                 int_signature = Exp.b64_to_dictionary(signature)['sign']
                 dict_vote = Exp.b64_to_dictionary(vote)
                 vote_available_to_be_verified = str((dict_vote['alpha'], dict_vote['betha']))
@@ -711,6 +726,11 @@ class Interface:
     def show_confirmation_dialog_to_recover_decrypt_key(self):
         # Ventana emergente
         confirm_dialog = tk.Toplevel(self._root)
+        width = 500
+        height = 100
+        pos_x = int((self.screen_width - width) / 2)
+        pos_y = int((self.screen_height - height) / 2)
+        confirm_dialog.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
         confirm_dialog.title("¡Atención!")
         tk.Label(
             confirm_dialog,
@@ -865,18 +885,76 @@ class Interface:
             self.notebook.add(self.decrypt_frame, text="Descifrado", state='normal')
             self.decrypt_frame.grid_columnconfigure(0, weight=1)
 
-            # Fila 1: Label informativo
+            row_df = self.generate_counter()
+            # =========================================================================================================
             self.info_decrypt_frame_label = tk.Label(
                 self.decrypt_frame,
                 font=self.title_font,
                 text="En esta pestaña se muestran los votos descifrados, puede contar los votos manualmente para "
                      "verificar el preconteo.",
             )
-            self.info_decrypt_frame_label.grid(row=0, column=0, sticky="ew")
+            self.info_decrypt_frame_label.grid(row=next(row_df), column=0, sticky="ew")
+
+            # =========================================================================================================
+            self.info_count_table_label = tk.Label(
+                self.decrypt_frame,
+                font=self.title_font,
+                text="Tabla de conteo"
+            )
+            self.info_count_table_label.grid(row=next(row_df), column=0, pady=self.default_pady)
+
+            # Tabla de conteo
+            # Contenedor para centrar los widgets
+            self.count_container = tk.Frame(self.decrypt_frame, bg="#F0F0F0")
+
+            self.count_container.grid_columnconfigure(0, weight=1, uniform="0")
+            self.count_container.grid_columnconfigure(1, weight=1, uniform="0")
+
+            self.count_container.grid(row=next(row_df), column=0, columnspan=1, padx=30, sticky="nsew")
+
+            self.candidate_name_header_label = tk.Label(
+                self.count_container,
+                font=self.title_font,
+                text="Candidato",
+                relief="groove"
+            )
+            self.candidate_name_header_label.grid(row=0, column=0, sticky="ew")
+
+            self.candidate_count_header_label = tk.Label(
+                self.count_container,
+                font=self.title_font,
+                text="Votos a favor",
+                relief="groove"
+            )
+            self.candidate_count_header_label.grid(row=0, column=1, sticky="ew")
+
+            for i, candidate in enumerate(self.pre_count):
+                candidate_name = candidate[0]
+                self.counter_of_votes_in_favor_dict[f"{candidate_name}"] = int(0)
+                name_lbl = self.create_label(self.count_container, bg="white", text=f"{candidate_name}", font=self.subtitle_font)
+                name_lbl.grid(row=i+1, column=0, sticky="ew")
+
+                count_lbl = self.create_label(
+                    self.count_container,
+                    bg="white",
+                    text=self.counter_of_votes_in_favor_dict[f"{candidate_name}"],
+                    font=self.subtitle_font
+                )
+
+                self.count_of_votes_in_favor_label.append([f"{candidate_name}", name_lbl, count_lbl])
+                idx = len(self.count_of_votes_in_favor_label)
+                self.count_of_votes_in_favor_label[idx-1][2].grid(row=i+1, column=1, sticky="ew")
+
+            self.info_plain_votes_table_label = tk.Label(
+                self.decrypt_frame,
+                font=self.title_font,
+                text="Tabla de votos descifrados",
+            )
+            self.info_plain_votes_table_label.grid(row=next(row_df), column=0, pady=self.default_pady)
 
             self.plain_votes_table = self.create_table(
                 frame=self.decrypt_frame,
-                row=1,
+                row=next(row_df),
                 column=0,
                 columnspan=3,
                 columns=("ID", "Candidate"),
@@ -884,18 +962,20 @@ class Interface:
                 column_widths=(100, 200),
                 column_min_widths = (100, 200),
                 stretch_configs= (True, True),
-                table_height=35
+                table_height=0
             )
-
-            self.notebook.select(3)
 
             self.notebook.tab(3, state='normal')
             self.notebook.select(3)
             total_votes = len(self.votes)
 
             row_id = None
+            # Limpia los datos cargados anteriormente
+            for row in self.plain_votes_table.get_children():
+                self.plain_votes_table.delete(row)
+
             for idx, vote in enumerate(self.votes):
-                id_, vote, signature = vote[0], vote[1], vote[2]
+                _id, vote, signature = vote[0], vote[1], vote[2]
 
                 int_signature = Exp.b64_to_dictionary(signature)['sign']
                 dict_vote = Exp.b64_to_dictionary(vote)
@@ -910,9 +990,39 @@ class Interface:
 
                 if is_valid == "Válido":
                     # Insertar el registro con la etiqueta correspondiente
-                    row_id = self.plain_votes_table.insert("", "end", values=(id_, plain_vote))
+                    if self.dynamic_plain_votes_table_height < 12:
+                        self.dynamic_plain_votes_table_height += 1
+                        self.plain_votes_table.configure(height=self.dynamic_plain_votes_table_height)
+                        self._root.update_idletasks()
+                    row_id = self.plain_votes_table.insert("", "end", values=(_id, plain_vote))
                     self.plain_votes_table.selection_set(row_id)
                     self.plain_votes_table.see(row_id)
+
+                    # Se suma el contador del candidato votado
+                    self.counter_of_votes_in_favor_dict[f"{plain_vote}"] += 1
+
+                    for i, _list in enumerate(self.count_of_votes_in_favor_label):
+                        # Si el candidato de la lista es igual al candidato del voto
+                        if _list[0] == plain_vote:
+                            # Resalta el candidato votado en esta iteracion
+                            _list[1].config(font=self.title_font)
+                            # Configura el label de esa lista con el valor de su contador de votos a favor
+                            _list[2].config(
+                                text=f"{self.counter_of_votes_in_favor_dict[f"{plain_vote}"]}",
+                                font=self.title_font
+                            )
+                            # Actualiza la interfaz
+                            self._root.update_idletasks()
+                            # Espera un segundo
+                            time.sleep(1)
+                            # Deja de resaltar la fila del candidato votado
+                            _list[1].config(font=self.subtitle_font)
+                            _list[2].config(font=self.subtitle_font)
+                            # Espera 100ms para dejar que se aprecie como vuelve a su estado original
+                            # (por si el candidato tiene votos seguidos)
+                            time.sleep(100 / 1000)
+                            # Como ya encontro el label indicado, break
+                            break
 
                 progress = (idx + 1) * 100 / total_votes
                 progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
@@ -924,6 +1034,15 @@ class Interface:
         except Exception as e:
             messagebox.showerror("Error al descifrar los votos", f": {e}")
             progress_window.after(0, progress_window.destroy)
+
+    def create_label(self, parent, bg, text, font):
+        new_label = tk.Label(
+            parent,
+            bg=bg,
+            text=text,
+            font=font
+        )
+        return new_label
 
     def create_table(self, frame, row, column, columnspan, columns, headings, column_widths, column_min_widths,
                      stretch_configs, container_sticky="nsew", table_height=10):
@@ -1041,7 +1160,9 @@ class Interface:
         # Ventana emergente de progreso
         progress_window = tk.Toplevel(self._root)
         progress_window.title(win_title)
-        progress_window.geometry(f"{win_width}x{win_height}")
+        pos_x = int((self.screen_width - win_width) / 2)
+        pos_y = int((self.screen_height - win_height) / 2)
+        progress_window.geometry(f"{win_width}x{win_height}+{pos_x}+{pos_y}")
         info_label = ttk.Label(
             progress_window,
             text=info_label
@@ -1070,6 +1191,13 @@ class Interface:
             info_label.config(text=f"Error: {e}")
         finally:
             progress_window.after(0, progress_window.destroy)
+
+    def ajustar_labels(self, event):
+        nuevo_ancho = event.width - 20  # Ancho ajustado según el tamaño de la ventana
+        for widget in self.pre_count_frame.winfo_children():
+            # Verificar si el widget es un Label
+            if isinstance(widget, tk.Label):
+                widget.config(wraplength=nuevo_ancho)
 
 if __name__ == "__main__":
     #root es la ventana
