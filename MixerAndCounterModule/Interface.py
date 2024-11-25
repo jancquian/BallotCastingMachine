@@ -21,7 +21,7 @@ class Interface:
         self._root = root
         self._root.title("Módulo de Mezcla y Conteo")
         self._root.geometry("1720x920")
-        self._root.resizable(False, False)
+        self._root.resizable(True, True)
 
         # Parametrizacion de textos
         self.title_font = ("Ubuntu Sans Mono Regular", 12, "bold")
@@ -406,6 +406,7 @@ class Interface:
     # Métodos genéricos
 
     # Metodo para crear un frame con un request_label, un import_button y debajo de ambos un path_label
+    # Necesario para los widgets de la importacion de la bóveda, firma de la bóveda y clave pública de firma
     def create_widget_container(self, parent_frame, container_name, title, import_command, file_path_label, row, column):
         # Crear contenedor
         container = tk.Frame(parent_frame)
@@ -451,7 +452,7 @@ class Interface:
         return container
 
     def import_file(self, container_name, file_type, file_name, request_default, is_imported_attribute, path_attribute):
-        # Abre el diálogo de selección de archivo
+        # Abre el cuadro de diálogo de selección de archivo
         file_path = filedialog.askopenfilename(
             title=f"Busque y seleccione el archivo {file_name}",
             filetypes=[(file_type, file_name)]  # Especifica el tipo de archivo
@@ -659,7 +660,7 @@ class Interface:
             self.notebook.tab(2, state='normal')
 
         except Exception as e:
-            info_label.config(text=f"Error: {e}")
+            messagebox.showerror("Error al insertar los registros de la base de datos:", f"{e}")
         finally:
             progress_window.destroy()
 
@@ -734,12 +735,13 @@ class Interface:
 
                 int_signature = Exp.b64_to_dictionary(signature)['sign']
                 dict_result = Exp.b64_to_dictionary(result)
-                result_available_to_be_verified = str(tuple([dict_result['alpha'], dict_result['betha']]))
+                result_available_to_be_decrypted = (dict_result['alpha'], dict_result['betha'])
+                result_available_to_be_verified = str(result_available_to_be_decrypted)
                 verifier = BSV.BlindSignatureVerifier(self.public_key)
                 is_valid = "Válido" if verifier.verify(int_signature, result_available_to_be_verified) else "Inválido"
 
                 dec = Decryptor(self.secret["P"], self.secret["G"], self.secret["PrK"])
-                plain_pre_count = dec.decipher(result_available_to_be_verified)
+                plain_pre_count = dec.decipher(result_available_to_be_decrypted)
 
                 if is_valid == "Válido":
                     self.plain_pre_count_table.insert("", "end", values=(id_, plain_pre_count))
@@ -782,7 +784,7 @@ class Interface:
             progress_window.after(0, progress_window.destroy)
 
         except Exception as e:
-            info_label.config(text=f"Error: {e}")
+            messagebox.showerror("Error al descifrar el preconteo", f": {e}")
             progress_window.after(0, progress_window.destroy)
 
     def pre_count_accepted(self):
@@ -834,13 +836,14 @@ class Interface:
 
                 int_signature = Exp.b64_to_dictionary(signature)['sign']
                 dict_vote = Exp.b64_to_dictionary(vote)
-                vote_available_to_be_verified = str(tuple([dict_vote['alpha'], dict_vote['betha']]))
-
+                vote_available_to_be_decrypted = (dict_vote['alpha'], dict_vote['betha'])
+                vote_available_to_be_verified = str(vote_available_to_be_decrypted)
                 verifier = BSV.BlindSignatureVerifier(self.public_key)
                 is_valid = "Válido" if verifier.verify(int_signature, vote_available_to_be_verified) else "Inválido"
 
                 dec = Decryptor(self.secret["P"], self.secret["G"], self.secret["PrK"])
-                plain_vote = dec.decipher_std(vote_available_to_be_verified)
+                int_plain_vote = dec.decipher_std(vote_available_to_be_decrypted)
+                plain_vote = Exp.int_to_string(int_plain_vote)
 
                 if is_valid == "Válido":
                     # Insertar el registro con la etiqueta correspondiente
@@ -851,7 +854,7 @@ class Interface:
             messagebox.showinfo("", "Descifrado de votos finalizado.")
 
         except Exception as e:
-            info_label.config(text=f"Error: {e}")
+            messagebox.showerror("Error al descifrar los votos", f": {e}")
             progress_window.after(0, progress_window.destroy)
 
     def create_table(self, frame, row, column, columnspan, columns, headings, column_widths, column_min_widths,
