@@ -5,6 +5,7 @@ class FakeMixNet:
         self.prime_number = prime
         self.generator = generator
         self.public_key = public_key
+        self.factors = []
 
     @staticmethod
     def generate_multiplicative_member(prime):
@@ -18,32 +19,48 @@ class FakeMixNet:
         rnd = rdom.randrange(0, number)
         print(rnd)
 
-    def recipher(self, chiper_txt):
+    def recipher(self, chiper_txt, recipher_factor=0):
         # Elemento c1 del texto cifrado original
         alpha = chiper_txt[0]
         # Elemento c2 del texto cifrado original
         betha = chiper_txt[1]
 
-        k = self.generate_multiplicative_member(self.prime_number)
+        if recipher_factor == 0:
+            k = self.generate_multiplicative_member(self.prime_number)
+        else:
+            k = recipher_factor
         c1 = (pow(self.generator, k, self.prime_number) * alpha) % self.prime_number
 
         s = pow(self.public_key, k, self.prime_number)
         c2 = (betha * s) % self.prime_number
-        return c1, c2
+        # Tambien devuelve el factor de recifrado para guardarlo en una lista
+        return (c1, c2), k
 
     def permute(self, ciphertexts):
-
-        permutation = list()
-        while True:
-            size = len(ciphertexts)
-            if size == 0:
-                break
-            else:
-                sel_index = rdom.randrange(0, size)
-                reciphertext = self.recipher(ciphertexts[sel_index])
+        permutation = []
+        # Conjunto de indices que ya fueron usados
+        used_indices = set()
+        size = len(ciphertexts)
+        # Iteramos hasta que hayamos usado todos los índices
+        while len(used_indices) < size:
+            # Obtenemos un factor de permutación aleatorio
+            sel_index = rdom.randrange(0, size)
+            if sel_index not in used_indices: # Entonces no se ha recifrado el ciphertext de ese indice
+                reciphertext, k = self.recipher(ciphertexts[sel_index])
+                alpha = reciphertext[0]
+                self.factors.append({f"{alpha}": [sel_index, k]})
                 permutation.append(reciphertext)
-                ciphertexts.pop(sel_index)
+                # Se establece el indice como usado
+                used_indices.add(sel_index)
+
         return permutation
+
+    def challenge(self, alpha):
+        for _dict in self.factors:
+            for k, v in _dict.items():
+                if str(k) == str(alpha):
+                    return v
+
 
 '''
 generador = EncryptionKeyGenerator()
