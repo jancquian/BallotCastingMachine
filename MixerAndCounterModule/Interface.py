@@ -1250,10 +1250,3 @@ class Interface:
             return True, greater_count, winner[0]
         else:
             return False, greater_count, winner
-
-
-if __name__ == "__main__":
-    #root es la ventana
-    root = tk.Tk()
-    app = Interface(root)
-    root.mainloop()
