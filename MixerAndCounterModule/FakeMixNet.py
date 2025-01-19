@@ -41,10 +41,14 @@ class FakeMixNet:
         # Conjunto de indices que ya fueron usados
         used_indices = set()
         size = len(ciphertexts)
+        #permutation_factors = [x for x in range(0, size)]
+
         # Iteramos hasta que hayamos usado todos los índices
         while len(used_indices) < size:
+        #while len(permutation_factors) > 0:
             # Obtenemos un factor de permutación aleatorio
             sel_index = rdom.randrange(0, size)
+            #sel_index = permutation_factors.pop(rdom.randrange(0, len(permutation_factors)))
             if sel_index not in used_indices: # Entonces no se ha recifrado el ciphertext de ese indice
                 reciphertext, k = self.recipher(ciphertexts[sel_index])
                 alpha = reciphertext[0]

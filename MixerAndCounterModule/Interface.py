@@ -1593,7 +1593,7 @@ class Interface:
         mixer_verifier = FMN(puk_encrption["P"], puk_encrption["G"], puk_encrption["PuK"])
         result, k = mixer_verifier.recipher(input_vote, k)
         if result == output_vote:
-            print("Prueba aprobada.")
+            #print("Prueba aprobada.")
             return True
         else:
             print("Prueba reprobada.")
