@@ -1,5 +1,6 @@
 # Para convertir cadenas en su clase original
 import ast
+import hashlib
 # Para evitar bloquear el hilo principal
 import threading
 import time
@@ -18,23 +19,30 @@ from Decryptor import Decryptor
 from Exporter import Exporter as Exp
 # Verificar firmas
 import BlindSignatureVerifier as BSV
+# Mezclar votos
+from FakeMixNet import FakeMixNet as FMN
 # Para reconstruir la clave privada del esquema de cifrado
 from KeyRecoveryComponent import KeyRecoveryComponent as KRC
 # Manejador de la base de datos
 import BookWorm as BW
+from Crypto.Random import random
+
+class Error(Exception):
+    pass
 
 class Interface:
     #___________________________________________________________________________________________________________________
     def __init__(self, root):
         # Configuración del frame
         # Ventana raiz
+        self.stop_event = threading.Event()
         self._root = root
         self._root.title("Módulo de Mezcla y Conteo")
         # Obtiene el tamaño de la pantalla
         self.screen_width = root.winfo_screenwidth()
         self.screen_height = root.winfo_screenheight()
         self._root.geometry(f"{self.screen_width}x{self.screen_height}+0+0")
-        self._root.minsize(width=1080, height=720)
+        #self._root.minsize(width=1720, height=950)
         self._root.resizable(True, True)
 
         # Parametrizacion de textos
@@ -50,7 +58,9 @@ class Interface:
         self.vault_path = ""
         self.vault_sign_path = ""
         self.puk_sign_path = ""
+        self.puk_cipher_path = ""
         self.shares_paths = []
+        self.prk_hash_path = ""
 
         # Variables para la recuperacion de la clave de descifrado
         self.shares = []
@@ -59,6 +69,7 @@ class Interface:
         # Objetos necesarios para la verificación de firmas
         self.public_key = None
         self.vault_sign = None
+        self.is_vault_valid = None
         self.pre_count_table = None # Treeview
         self.votes_table = None # Treeview
         self.votes = None # Lista de votos recuperados de la bd
@@ -70,15 +81,22 @@ class Interface:
 
         # Variables para verificar la importación de archivos __________________
 
-        # Necesario para verificacion de firmas y descifrado
+        # Banderas de importación
+
+        # Bandera de bóveda
         self.is_vault_imported = False
 
         # Necesarios para verificacion de firmas
         self.is_vault_sign_imported = False
         self.is_signature_imported = False
 
-        # Necesarios para descifrado
+        # Necesaria para mezclado
+        self.is_puk_cipher_imported = False
+        self.mixed_votes_not_approved_by_verifier = []
+
+        # Necesarios para conteo y descifrado
         self.are_shares_imported = False
+        self.is_prk_hash_imported = False
 
         # _______________________________________________________________________
 
@@ -94,12 +112,16 @@ class Interface:
         self.vault_name = "vault.db"
         self.vault_sign_name = "vault_sign.pem"
         self.puk_signature_name = "BsgPukChaum.pem"
+        self.puk_cipher_name = "EkgPukElGamal.pem"
         self.shares_names = "EkgPrkElGamal*Of*.pem"
+        self.hash_name = "EkgPrkElGamalDigest.pem"
 
         # Variables con las leyendas para importar archivos
         self.vault_request_default = f"Debe importar \"{self.vault_name}\""
         self.vault_sign_req_default = f"Debe importar \"{self.vault_sign_name}\""
         self.puk_signature_request_default = f"Debe importar \"{self.puk_signature_name}\""
+        self.puk_cipher_request_default = f"Debe importar \"{self.puk_cipher_name}\""
+        self.prk_hash_request_default = f"Debe importar \"{self.hash_name}\""
 
 
 
@@ -118,16 +140,14 @@ class Interface:
 
         row_vsf = self.generate_counter() # Se inicializa el contador que contiene la posicion de la fila actual
         #===============================================================================================================
-        row_value = next(row_vsf)  # Se obtiene el valor de la fila para el wigdet que colocaré a continuación
-
         info_verify_signature_frame_label = tk.Label(
             self.verify_signature_frame,
             text="En esta pestaña, se verificará la integridad de la bóveda electoral. "
                  "Por favor, importe los archivos solicitados a continuación:",
             font=self.title_font,
         )
-
-        info_verify_signature_frame_label.grid(row=row_value, column=0, columnspan=3, sticky="ew")
+        info_verify_signature_frame_label.grid(row=next(row_vsf), column=0, columnspan=3, sticky="ew")
+        self.verify_signature_frame.grid_rowconfigure(next(row_vsf), minsize=20) # Fila de padding
 
         #===============================================================================================================
         # En cada columna de esta fila hay un contenedor de tres widgets (file_req_lbl, import_btn, file_path_lbl)
@@ -190,8 +210,6 @@ class Interface:
         )
 
         #===============================================================================================================
-        row_value = next(row_vsf)
-
         self.start_verification_button = tk.Button(
             self.verify_signature_frame,
             text="Continuar",
@@ -200,7 +218,8 @@ class Interface:
                 target_function=self.load_db_data,
             )
         )
-        self.start_verification_button.grid(row=row_value, column=0, columnspan=3, pady=0)
+        self.start_verification_button.grid(row=next(row_vsf), column=0, columnspan=3, pady=0)
+        self.verify_signature_frame.grid_rowconfigure(next(row_vsf), minsize=20) # Fila de padding
 
         #===============================================================================================================
         self.vault_ver_res_lbl_row = next(row_vsf)
@@ -213,14 +232,12 @@ class Interface:
         # Se renderiza (grid) al cargar datos y verificar firmas
 
         #===============================================================================================================
-        row_value = next(row_vsf)
-
         self.pre_count_label = tk.Label(
             self.verify_signature_frame,
             text="Verificación de firmas de la tabla de preconteo:",
             font=self.title_font
         )
-        self.pre_count_label.grid(row=row_value, column=0, columnspan=3, pady=self.default_pady, sticky="n")
+        self.pre_count_label.grid(row=next(row_vsf), column=0, columnspan=3, pady=self.default_pady, sticky="n")
 
         #===============================================================================================================
         row_value = next(row_vsf)
@@ -233,20 +250,19 @@ class Interface:
             columns=("ID", "Result", "Signature", "Integrity"),
             headings=("ID", "Conteo", "Firma", "Integridad"),
             column_widths=(300, 620, 620, 100),
-            column_min_widths=(300, 21100, 21100, 100),
+            column_min_widths=(300, 14100, 14100, 100),
             stretch_configs=(False, False, False, True),
             table_height=6
         )
+        # Se renderiza en la llamada a self.create_table
 
         #===============================================================================================================
-        row_value = next(row_vsf)
-
         self.votes_label = tk.Label(
             self.verify_signature_frame,
             text="Verificación de firmas de la tabla de votos:",
             font=self.title_font
         )
-        self.votes_label.grid(row=row_value, column=0, columnspan=3, pady=self.default_pady)
+        self.votes_label.grid(row=next(row_vsf), column=0, columnspan=3, pady=self.default_pady)
 
         #===============================================================================================================
         row_value = next(row_vsf)
@@ -258,7 +274,7 @@ class Interface:
             columns=("ID", "Vote", "Signature", "Integrity"),
             headings=("ID", "Voto", "Firma", "Integridad"),
             column_widths=(60, 740, 740, 100),
-            column_min_widths=(60, 21100, 21100, 100),
+            column_min_widths=(60, 14100, 14100, 100),
             stretch_configs=(True, False, False, True),
             table_height=18
         )
@@ -266,13 +282,13 @@ class Interface:
         #===============================================================================================================
         row_value = next(row_vsf)
 
-        self.goto_pre_count_button = tk.Button(
+        self.goto_mix_button = tk.Button(
             self.verify_signature_frame,
             text="Continuar",
             state='disabled',
-            command=self.goto_pre_count
+            command=self.goto_mix
         )
-        self.goto_pre_count_button.grid(row=row_value, column=2, pady=self.default_pady, padx=30, sticky="e")
+        self.goto_mix_button.grid(row=row_value, column=2, pady=self.default_pady, padx=30, sticky="e")
 
 
         # Fin del tab de verificacion de firmas
@@ -280,12 +296,83 @@ class Interface:
         # Tab de Mezcla
 
 
-
         # Se crea el tab de mezcla
-        self.mix_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.mix_frame, text="Mezcla", state='disabled')
+        self.mix_frame = tk.Frame(self.notebook, bg="#F0F0F0")
+        self.notebook.add(self.mix_frame, text="Mezcla", state="disabled")
+        self.mix_frame.grid_columnconfigure(0, weight=1)
 
+        row_mf = self.generate_counter()
 
+        #===============================================================================================================
+        info_mix_frame_label = tk.Label(
+            self.mix_frame,
+            font=self.title_font,
+            text="En esta pestaña se mostrará el mezclado de votos."
+        )
+        info_mix_frame_label.grid(row=next(row_mf), column=0, pady=self.default_pady, sticky="ew")
+        self.mix_frame.grid_rowconfigure(next(row_mf), minsize=20) # Fila de padding
+
+        #===============================================================================================================
+        self.puk_cipher_container = self.create_widget_container(
+            self.mix_frame,
+            container_name="puk_cipher_container",
+            title="Clave pública de cifrado (*.pem)",
+            import_command=lambda: self.import_file(
+                container_name='puk_cipher_container',
+                file_type="Clave de cifrado",
+                file_name=self.puk_cipher_name,
+                request_default=self.puk_cipher_request_default,
+                is_imported_attribute='is_puk_cipher_imported',
+                path_attribute='puk_cipher_path'
+            ),
+            file_path_label=self.puk_cipher_request_default,
+            row=next(row_mf),
+            column=0,
+            padx_container=20
+        )
+
+        #===============================================================================================================
+        self.table_containers_container = tk.Frame(self.mix_frame, bg="#F0F0F0")
+        self.table_containers_container.grid(row=next(row_mf), column=0, padx=30, pady=self.default_pady)
+        for i in range(3):
+            self.table_containers_container.grid_columnconfigure(i, weight=1, uniform="0")
+
+        self.table_containers = []
+        for i in range(3):
+            self.table_containers.append(tk.Frame(self.table_containers_container, bg="#F0F0F0"))
+            self.table_containers[i].grid_columnconfigure(0, weight=1)
+            self.table_containers[i].grid(row=0, column=i, pady=self.default_pady, padx=0, sticky="nsew")
+
+        for i in range(3):
+            info_permutation = tk.Label(self.table_containers[i], font=self.title_font, text=f"Mezcla #{i+1}:")
+            info_permutation.grid(row=0, column=0, pady=self.default_pady)
+
+        self.mix_table = []
+
+        for i in range(3):
+            self.mix_table.append(
+                self.create_table(
+                    self.table_containers[i],
+                    row=1,
+                    column=0,
+                    columnspan=1,
+                    columns=["Vote"],
+                    headings=["Voto"],
+                    column_widths=[520],
+                    column_min_widths=[14100],
+                    stretch_configs=[False],
+                    table_height=35
+                )
+            )
+
+        # ==========================================================================================================
+        self.goto_pre_count_button = tk.Button(
+            self.mix_frame,
+            text="Continuar",
+            state='disabled',
+            command=self.goto_pre_count
+        )
+        self.goto_pre_count_button.grid(row=next(row_mf), column=0, pady=self.default_pady, padx=30, sticky="e")
 
         # Fin del tab de Mezcla
         ################################################################################################################
@@ -300,7 +387,7 @@ class Interface:
         self.accept_pre_count_label = None
 
         self.pre_count_frame = tk.Frame(self.notebook, bg="#F0F0F0")
-        self.notebook.add(self.pre_count_frame, text="Preconteo", state='normal')
+        self.notebook.add(self.pre_count_frame, text="Preconteo", state="disabled")
         self.pre_count_frame.grid_columnconfigure(0, weight=1)
 
         row_pcf = self.generate_counter()
@@ -309,74 +396,144 @@ class Interface:
             self.pre_count_frame,
             font=self.title_font,
             text="Para iniciar la fase de conteo, se debe contar con una mínima cantidad de fragmentos de la clave de "
-                 "descifrado. Para conocer este valor, importe alguno de los fragmentos.\n"
-                 "A continuación, verifique la cantidad que se especifica en la columna \"Fragmentos requeridos\" de la "
-                 "tabla debajo.\nContinúe importando fragmentos hasta llegar a la cantidad especificada.",
+                 "descifrado. Para conocer este valor, importe alguno de los fragmentos desde el botón \"Importar "
+                 "fragmentos\".\n"
+                 "Después de importar el primer fragmento, verifique la cantidad que se especifica en la columna "
+                 "\"Fragmentos requeridos\" en la tabla de fragmentos importados de la clave privada. Continúe "
+                 "importando fragmentos hasta llegar a dicha cantidad.",
 
         )
         self.info_pre_count_frame_label.grid(row=next(row_pcf), column=0, sticky="ew")
+        self.pre_count_frame.grid_rowconfigure(next(row_pcf), minsize=20) # Fila de padding
 
         #===============================================================================================================
-        # Contenedor para centrar los widgets
-        self.shares_container = tk.Frame(self.pre_count_frame, bg="#F0F0F0")
-        self.shares_container.grid_columnconfigure(0, weight=4)
-        for i in range(1, 5): #[1,4]
-            # Configuración del grid para tener tamaños uniformes en las columnas 1-4 (no la columna 0)
-            self.shares_container.grid_columnconfigure(i, weight=1, uniform="0")
-        self.shares_container.grid(row=next(row_pcf), column=0, columnspan=1, padx=30, pady=self.default_pady, sticky="nsew")
-
-        col_shares_container = self.generate_counter()
-        self.share_name_label = tk.Label(
-            self.shares_container,
+        self.info_shares_table = tk.Label(
+            self.pre_count_frame,
+            text="Tabla de fragmentos importados de la clave privada",
             font=self.title_font,
-            text="Fragmento",
-            relief="groove"
         )
-        self.share_name_label.grid(row=0, column=next(col_shares_container), sticky="ew")
+        self.info_shares_table.grid(row=next(row_pcf), column=0, pady=self.default_pady)
 
-        self.share_number_label = tk.Label(
-            self.shares_container,
-            font=self.title_font,
-            text="ID de fragmento",
-            relief="groove"
+        #===============================================================================================================
+        self.shares_table = tk.Frame(
+            self.pre_count_frame,
+            bg="#F0F0F0",
         )
-        self.share_number_label.grid(row=0, column=next(col_shares_container), sticky="ew")
+        self.shares_table.grid(row=next(row_pcf), column=0, pady=self.default_pady, sticky="nsew")
+        self.shares_table.grid_columnconfigure(0, weight=3, uniform="0")
+        self.shares_table.grid_columnconfigure(1, weight=1, uniform="0")
 
-        self.share_number_label = tk.Label(
-            self.shares_container,
-            font=self.title_font,
-            text="Fragmentos requeridos",
-            relief="groove"
-        )
-        self.share_number_label.grid(row=0, column=next(col_shares_container), sticky="ew")
-
-        self.required_shares_label = tk.Label(
-            self.shares_container,
-            font=self.title_font,
-            text="Fragmentos totales",
-            relief="groove"
-        )
-        self.required_shares_label.grid(row=0, column=next(col_shares_container), sticky="ew")
-
-        self.required_shares_label = tk.Label(
-            self.shares_container,
-            font=self.title_font,
-            text="Fragmentos importados",
-            relief="groove"
-        )
-        self.required_shares_label.grid(row=0, column=next(col_shares_container), sticky="ew")
 
         self.req_shares = None
         self.total_shares = None
+        # Diccionario con los widgets de los shares importados
+        self.shares_widgets = {
+            "share_name": [],
+            "share_id": [],
+        }
+
+        self.shares_container = tk.Frame(self.shares_table, bg="#F0F0F0")
+        self.shares_container.grid(row=0, column=0, padx=30, sticky="nsew")
+        self.shares_container.grid_columnconfigure(0, weight=1)
+        self.shares_container.grid_rowconfigure(0, weight=1)
+
+        self.share_name_id_table = self.create_table(
+            self.shares_container,
+            row=0,
+            column=0,
+            columnspan=1,
+            columns=("share_name", "share_id"),
+            headings=("Fragmento", "ID"),
+            column_widths=(500, 500),
+            column_min_widths=(10, 10),
+            stretch_configs=(True, True),
+            table_height=2
+        )
+
+        self.shares_quantities = tk.Frame(self.shares_table, bg="#F0F0F0")
+        self.shares_quantities.grid(row=0, column=1, padx=30, sticky="ew")
+        self.shares_quantities.grid_columnconfigure(0, weight=1)
+        self.shares_quantities.grid_columnconfigure(1, weight=1)
+        for i in range(3):
+            self.shares_quantities.grid_rowconfigure(i, weight=1)
+
+        info_required_shares = tk.Label(
+            self.shares_quantities,
+            font=self.title_font,
+            text="Fragmentos requeridos",
+            relief="solid"
+        )
+        info_required_shares.grid(row=0, column=0, sticky="ew")
+
+        info_total_shares = tk.Label(
+            self.shares_quantities,
+            font=self.title_font,
+            text="Fragmentos totales",
+            relief="solid"
+        )
+        info_total_shares.grid(row=1, column=0, sticky="ew")
+
+        info_imported_shares = tk.Label(
+            self.shares_quantities,
+            font=self.title_font,
+            text="Fragmentos importados",
+            relief="solid"
+        )
+        info_imported_shares.grid(row=2, column=0, sticky="ew")
+
+        self.numbers_shares = {
+            "rs": tk.Label(
+                self.shares_quantities,
+                bg="white",
+                relief="solid"
+            ), "ts": tk.Label(
+                self.shares_quantities,
+                bg="white",
+                relief="solid"
+            ), "is": tk.Label(
+                self.shares_quantities,
+                bg="white",
+                relief="solid"
+            )}
+        for i, key in enumerate(self.numbers_shares):
+            self.numbers_shares[key].grid(row=i, column=1, sticky="nsew")
+
+        # ===============================================================================================================
+        # Contenedor para centrar los widgets
+        self.shares_container = tk.Frame(self.pre_count_frame, bg="#F0F0F0")
+        self.shares_container.grid_columnconfigure(0, weight=4)
 
         #===============================================================================================================
-        import_share_button = tk.Button(
+        self.import_share_button = tk.Button(
             self.pre_count_frame,
-            text=self.default_import_legend,
+            text="Importar fragmentos",
             command=self.import_share,
             padx=self.default_padx_buttons
         )
-        import_share_button.grid(row=next(row_pcf), column=0, columnspan=5, padx=5, pady=self.default_pady)
+        self.import_share_button.grid(row=next(row_pcf), column=0, columnspan=5, padx=5, pady=self.default_pady)
+        empty_space_2 = self.get_empty_space(self.pre_count_frame, bg="#F0F0F0")
+        empty_space_2.grid(row=next(row_pcf), column=0, sticky="ew")
+
+        #===============================================================================================================
+        # Widgets de hash de prk
+        self.prk_hash_container = self.create_widget_container(
+            parent_frame=self.pre_count_frame,
+            container_name='prk_hash_container',
+            title="Por favor, importe el hash de la clave de descifrado (*.pem)",
+            import_command=lambda: self.import_file(
+                container_name='prk_hash_container',
+                file_type="Hash",
+                file_name=self.hash_name,
+                request_default=self.prk_hash_request_default,
+                is_imported_attribute='is_prk_hash_imported',
+                path_attribute='prk_hash_path'
+            ),
+            file_path_label=self.prk_hash_request_default,
+            row=next(row_pcf),
+            column=0,
+            padx_container=20
+        )
+        self.widget_containers["prk_hash_container"]["button"].config(state='disabled')
 
         #===============================================================================================================
         self.reconstruct_button = tk.Button(
@@ -390,7 +547,7 @@ class Interface:
         #===============================================================================================================
         self.plain_pre_count_table = self.create_table(
             frame=self.pre_count_frame,
-            row=5,
+            row=next(row_pcf),
             column=0,
             columns=("ID", "PreCount"),
             columnspan=3,
@@ -400,6 +557,9 @@ class Interface:
             stretch_configs=(True, True),
             table_height=6
         )
+
+        #===============================================================================================================
+        self.accept_pre_count_container_row = next(row_pcf)
 
         # Fin del tab de preconteo
         ################################################################################################################
@@ -436,11 +596,11 @@ class Interface:
 
     # Metodo para crear un frame con un request_label, un import_button y debajo de ambos un path_label
     # Necesario para los widgets de la importacion de la bóveda, firma de la bóveda y clave pública de firma
-    def create_widget_container(self, parent_frame, container_name, title, import_command, file_path_label, row, column):
+    def create_widget_container(self, parent_frame, container_name, title, import_command, file_path_label, row, column,
+                                padx_container=0):
         # Crear contenedor
-        container = tk.Frame(parent_frame)
-        container.grid(row=row, column=column, pady=self.default_pady, sticky="ew")
-        container.configure(background="#F0F0F0")
+        container = tk.Frame(parent_frame, bg="#F0F0F0")
+        container.grid(row=row, column=column, padx=padx_container, pady=self.default_pady, sticky="ew")
         container.grid_columnconfigure(0, weight=1)
         container.grid_columnconfigure(1, weight=1)
 
@@ -450,7 +610,7 @@ class Interface:
             text=title,
             font=self.title_font
         )
-        file_requested_label.grid(row=0, column=0, sticky="e")
+        file_requested_label.grid(row=0, column=0, padx=0, sticky="e")
 
         # Botón para seleccionar el archivo solicitado
         import_file_button = tk.Button(
@@ -460,6 +620,7 @@ class Interface:
             padx=self.default_padx_buttons
         )
         import_file_button.grid(row=0, column=1, padx=5, sticky="w")
+
 
         # Label donde se imrpimirá la ruta del archivo seleccionado
         file_path_label = tk.Label(
@@ -475,7 +636,8 @@ class Interface:
         # Almacena los widgets en el diccionario de contenedores
         self.widget_containers[container_name] = {
             'container': container,
-            'file_path_label': file_path_label
+            'file_path_label': file_path_label,
+            'button': import_file_button,
         }
 
         return container
@@ -497,6 +659,9 @@ class Interface:
 
             # Cambia el estado de importación a True
             setattr(self, is_imported_attribute, True)
+
+            if file_type == "Clave de cifrado":
+                self.do_mix()
         else:
             # Si no se seleccionó un archivo, restablece el valor
             setattr(self, path_attribute, "")
@@ -510,8 +675,12 @@ class Interface:
             # Cambia el estado de importación a False
             setattr(self, is_imported_attribute, False)
 
-        # Comprueba que los archivos para la verificación de firmas están importados
-        self.check_verify_files_are_imported()
+        if file_type == "Hash":
+            self.check_prk_hash_is_imported()
+
+        elif file_type != "Clave de cifrado":
+            # Comprueba que los archivos para la verificación de firmas están importados
+            self.check_verify_files_are_imported()
 
     def import_share(self):
         file_path = filedialog.askopenfilename(
@@ -523,27 +692,31 @@ class Interface:
                 self.shares_paths.append(file_path)
                 self.load_share_data(len(self.shares_paths)-1)
         else:
-            self.shares_paths.clear()
-            self.reconstruct_button.configure('disabled')
+            self.set_default_shares_table()
 
     def check_verify_files_are_imported(self):
         if self.is_vault_imported and self.is_signature_imported and self.is_vault_sign_imported:
             self.start_verification_button.config(state='normal')
         else:
             self.start_verification_button.config(state='disabled')
-            self.notebook.tab(1, state='disabled')
-            #self.notebook.tab(2, state='disabled')
-            self.notebook.select(0)
+
+    def check_prk_hash_is_imported(self):
+        if self.is_prk_hash_imported:
+            self.reconstruct_button.config(state='normal')
+        else:
+            self.reconstruct_button.config(state='disabled')
+
+
+    def goto_mix(self):
+        self.notebook.select(1)
 
     def goto_pre_count(self):
         self.notebook.select(2)
 
     def load_db_data(self, progress_window, info_label, progress_bar, percentage_label):
+        empty_flag = False
         try:
             self.start_verification_button.config(state='disabled')
-            self.goto_pre_count_button.config(state='normal')
-            self.notebook.tab(2, state='normal')
-            print("Ruta de la base de datos:", self.vault_path)
 
             # Se carga la clave pública de firma
             self.public_key = Exp.import_key(self.puk_sign_path)
@@ -552,177 +725,235 @@ class Interface:
             # Se obtienen los registros de las tablas de la base de datos
             self.votes = bw.fetch_records("votos")
             self.pre_count = bw.fetch_records("conteo")
-
+            cancel = False
             # Verifica si no se obtuvieron registros
             if not self.votes and not self.pre_count:
-                messagebox.showinfo(
-                    "Bóveda vacía",
-                    "No se encontraron votos ni registros de preconteo en la base de datos."
-                )
-                progress_window.destroy()
-                return
-
-            # Lista de votos vacía
-            if not self.votes:
-                messagebox.showinfo("", "No se encontraron votos en la base de datos.")
+                cancel = True
+                empty_flag = True
 
             # Lista de preconteo vacía
             if not self.pre_count:
-                messagebox.showinfo("", "No se encontraron registros de preconteo en la base de datos.")
+                cancel = True
+                empty_flag = True
 
-            # Se obtiene la cantidad de registros obtenidos para calcular el preconteo
-            total_candidates = len(self.pre_count)
-            total_votes = len(self.votes)
-            total_records = total_candidates + total_votes
+            # Lista de votos vacía
+            if not self.votes:
+                cancel = True
+                empty_flag = True
 
-            # Inicialización de la variable donde se guardará el progreso parcial
-            actual_progress = None
-            verifier = BSV.BlindSignatureVerifier(self.public_key)
+            if not cancel:
+                # Se obtiene la cantidad de registros obtenidos para calcular el preconteo
+                total_candidates = len(self.pre_count)
+                total_votes = len(self.votes)
+                total_records = total_candidates + total_votes
 
-            # Limpia datos pasados de la tabla de preconteo
-            for row in self.pre_count_table.get_children():
-                self.pre_count_table.delete(row)
-
-            # Limpia datos pasados de la tabla de votos
-            for row in self.votes_table.get_children():
-                self.votes_table.delete(row)
-
-            # Verificacion de la firma de la bóveda
-            self.vault_sign = Exp.import_key(self.vault_sign_path)["sign"]
-            vault_data_hex = Exp.get_hex_of_file(self.vault_path)
-            is_vault_valid = verifier.verify(self.vault_sign, vault_data_hex)
-            if is_vault_valid:
-                self.vault_verification_result_label.config(
-                    fg="blue",
-                    font=self.subtitle_font,
-                    text="La firma de la bóveda es válida",
-                )
-            else:
-                self.vault_verification_result_label.config(
-                    fg="red",
-                    font=self.subtitle_font,
-                    text="La firma de la bóveda es inválida",
-                )
-            #Se coloca el widget con el resultado de verificación
-            self.vault_verification_result_label.grid(column=0, row=self.vault_ver_res_lbl_row, columnspan=3,
-                                                      pady=self.default_pady)
-
-            # Carga de datos de preconteo
-            progress_window.title("Cargando registros (1/2)")
-            info_label.config(text="Cargando datos de preconteo. Por favor, espere...")
-
-            # Inserta registros en la tabla 'preconteo' mostrando el progreso
-            for idx, pre_count_table_data in enumerate(self.pre_count):
-                candidate, result, signature = pre_count_table_data[0], pre_count_table_data[1], pre_count_table_data[2]
-
-                row_id = self.pre_count_table.insert("", "end", values=(candidate, result, signature, ""))
-                # Mantiene enfocada la última fila has
-                self.pre_count_table.selection_set(row_id)  # Selecciona la fila
-                self.pre_count_table.see(row_id)  # Se desplaza para mostrarla
-
-                progress = (idx + 1) * 100 / total_records
-                progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
-
-                # Si se está en la última iteración
-                if (idx+1) == total_candidates:
-                    # Se guarda el progreso actual
-                    actual_progress = progress
-                    # Elimina el enfoque del registro
-                    self.pre_count_table.selection_remove(row_id)
-
-
-            progress_window.title("Cargando registros (2/2)")
-            info_label.config(text="Cargando los votos cifrados. Por favor, espere...")
-
-            for idx, vote in enumerate(self.votes):
-                candidate, vote, signature = vote[0], vote[1], vote[2]
-
-                row_id = self.votes_table.insert("", "end", values=(candidate, vote, signature, ""))
-                # Mantiene enfocada la última fila has
-                self.votes_table.selection_set(row_id)  # Selecciona la fila
-                self.votes_table.see(row_id)  # Se desplaza para mostrarla
-
-                progress = actual_progress + ((idx + 1) * 100 / total_records)
-                progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
-
-                if (idx+1) == total_votes:
-                    # Elimina el enfoque del registro
-                    self.votes_table.selection_remove(row_id)
-
-            # Se reinicia el progreso del primer for
-            actual_progress = 0
-
-            progress_window.title("Verificando integridad (1/2)")
-            info_label.config(text="Verificando las firmas de los datos de preconteo. Por favor, espere...")
-
-            # Verifica firmas de preconteo
-            for idx, item_id in enumerate(self.pre_count_table.get_children()):
-                pre_count = self.pre_count[idx]
-                result, signature = pre_count[1], pre_count[2]
-
-                int_signature = Exp.b64_to_dictionary(signature)['sign']
-                dict_result = Exp.b64_to_dictionary(result)
-                # dict -> tuple -> str
-                result_available_to_be_verified = str((dict_result['alpha'], dict_result['betha']))
-
-                is_valid = "Válido" if verifier.verify(int_signature, result_available_to_be_verified) else "Inválido"
-                tag = "valid" if is_valid == "Válido" else "invalid"
-
-                current_values = self.pre_count_table.item(item_id, "values")
-                updated_values = current_values[:-1] + (is_valid,)
-
-                self.pre_count_table.item(item_id, values=updated_values, tags=(tag,))
-                self.pre_count_table.selection_set(item_id)
-                self.pre_count_table.see(item_id)
-
-                progress = actual_progress + ((idx + 1) * 100 / total_records)
-                progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
-
-                # Si es la última iteración
-                if (idx + 1) == total_candidates:
-                    # Guarda el progreso parcial
-                    actual_progress = progress
-                    self.pre_count_table.selection_remove(item_id)
-
-            print("Datos cargados en la tabla 'preconteo'.")
-
-            progress_window.title("Verificando integridad (2/2)")
-            info_label.config(text="Verificando integridad de los votos. Por favor, espere...")
-
-            # Verificación de firmas de votos
-            for idx, item_id in enumerate(self.votes_table.get_children()):
-                votes = self.votes[idx]
-                vote, signature = votes[1], votes[2]
-                int_signature = Exp.b64_to_dictionary(signature)['sign']
-                dict_vote = Exp.b64_to_dictionary(vote)
-                vote_available_to_be_verified = str((dict_vote['alpha'], dict_vote['betha']))
+                # Inicialización de la variable donde se guardará el progreso parcial
+                actual_progress = None
                 verifier = BSV.BlindSignatureVerifier(self.public_key)
-                is_valid = "Válido" if verifier.verify(int_signature, vote_available_to_be_verified) else "Inválido"
 
-                # Color del texto de la tabla en función de la validez
-                tag = "valid" if is_valid == "Válido" else "invalid"
+                # Limpia datos pasados de la tabla de preconteo
+                for row in self.pre_count_table.get_children():
+                    self.pre_count_table.delete(row)
 
-                current_values = self.votes_table.item(item_id, "values")
-                updated_values = current_values[:-1] + (is_valid,)
-                self.votes_table.item(item_id, values=updated_values, tags=(tag,))
-                # Mantiene enfocada la última fila has
-                self.votes_table.selection_set(item_id)  # Selecciona la fila
-                self.votes_table.see(item_id)  # Se desplaza para mostrarla
+                # Limpia datos pasados de la tabla de votos
+                for row in self.votes_table.get_children():
+                    self.votes_table.delete(row)
 
-                progress = actual_progress + ((idx + 1) * 100 / total_records)
-                if (idx + 1) == total_votes:
-                    self.votes_table.selection_remove(item_id)
-                progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+                # Verificacion de la firma de la bóveda
+                self.vault_sign = Exp.import_key(self.vault_sign_path)["sign"]
+                vault_data_hex = Exp.get_hex_of_file(self.vault_path)
+                self.is_vault_valid = verifier.verify(self.vault_sign, vault_data_hex)
+                if self.is_vault_valid:
+                    self.vault_verification_result_label.config(
+                        fg="blue",
+                        font=self.subtitle_font,
+                        text="La firma de la bóveda es válida",
+                    )
+                else:
+                    self.vault_verification_result_label.config(
+                        fg="red",
+                        font=self.subtitle_font,
+                        text="La firma de la bóveda es inválida",
+                    )
+                #Se coloca el widget con el resultado de verificación
+                self.vault_verification_result_label.grid(column=0, row=self.vault_ver_res_lbl_row, columnspan=3,
+                                                          pady=self.default_pady)
 
-            print("Datos cargados en la tabla 'votos'.")
+                # Carga de datos de preconteo
+                progress_window.title("Cargando registros (1/2)")
+                info_label.config(text="Cargando datos de preconteo. Por favor, espere...")
 
-            # Habilitar las pestañas "Verificación de Firmas" y "Mezcla y Conteo"
-            self.notebook.tab(2, state='normal')
+
+
+                # Inserta registros en la tabla 'preconteo' mostrando el progreso
+                for idx, pre_count_table_data in enumerate(self.pre_count):
+                    cancel = self.verify_stop_event()
+                    if cancel:
+                        break
+                    candidate, result, signature = pre_count_table_data[0], pre_count_table_data[1], pre_count_table_data[2]
+
+                    row_id = self.pre_count_table.insert("", "end", values=(candidate, result, signature, ""))
+                    # Mantiene enfocada la última fila has
+                    self.pre_count_table.selection_set(row_id)  # Selecciona la fila
+                    self.pre_count_table.see(row_id)  # Se desplaza para mostrarla
+
+                    progress = (idx + 1) * 100 / total_records
+                    progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+
+                    # Si se está en la última iteración
+                    if (idx+1) == total_candidates:
+                        # Se guarda el progreso actual
+                        actual_progress = progress
+                        # Elimina el enfoque del registro
+                        self.pre_count_table.selection_remove(row_id)
+
+
+                progress_window.title("Cargando registros (2/2)")
+                info_label.config(text="Cargando los votos cifrados. Por favor, espere...")
+
+                for idx, vote in enumerate(self.votes):
+                    cancel = self.verify_stop_event()
+                    if cancel:
+                        break
+                    candidate, vote, signature = vote[0], vote[1], vote[2]
+
+                    row_id = self.votes_table.insert("", "end", values=(candidate, vote, signature, ""))
+                    # Mantiene enfocada la última fila has
+                    self.votes_table.selection_set(row_id)  # Selecciona la fila
+                    self.votes_table.see(row_id)  # Se desplaza para mostrarla
+
+                    progress = actual_progress + ((idx + 1) * 100 / total_records)
+                    progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+
+                    if (idx+1) == total_votes:
+                        # Elimina el enfoque del registro
+                        self.votes_table.selection_remove(row_id)
+
+                # Se reinicia el progreso del primer for
+                actual_progress = 0
+
+                progress_window.title("Verificando integridad (1/2)")
+                info_label.config(text="Verificando las firmas de los datos de preconteo. Por favor, espere...")
+
+                # Verifica firmas de preconteo
+                for idx, item_id in enumerate(self.pre_count_table.get_children()):
+                    cancel = self.verify_stop_event()
+                    if cancel:
+                        break
+                    pre_count = self.pre_count[idx]
+                    result, signature = pre_count[1], pre_count[2]
+
+                    int_signature = Exp.b64_to_dictionary(signature)['sign']
+                    dict_result = Exp.b64_to_dictionary(result)
+                    # dict -> tuple -> str
+                    result_available_to_be_verified = str((dict_result['alpha'], dict_result['betha']))
+
+                    is_valid = "Válido" if verifier.verify(int_signature, result_available_to_be_verified) else "Inválido"
+                    tag = "valid" if is_valid == "Válido" else "invalid"
+
+                    current_values = self.pre_count_table.item(item_id, "values")
+                    updated_values = current_values[:-1] + (is_valid,)
+
+                    self.pre_count_table.item(item_id, values=updated_values, tags=(tag,))
+                    self.pre_count_table.selection_set(item_id)
+                    self.pre_count_table.see(item_id)
+
+                    progress = actual_progress + ((idx + 1) * 100 / total_records)
+                    progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+
+                    # Si es la última iteración
+                    if (idx + 1) == total_candidates:
+                        # Guarda el progreso parcial
+                        actual_progress = progress
+                        self.pre_count_table.selection_remove(item_id)
+
+                progress_window.title("Verificando integridad (2/2)")
+                info_label.config(text="Verificando integridad de los votos. Por favor, espere...")
+
+                # Verificación de firmas de votos
+                for idx, item_id in enumerate(self.votes_table.get_children()):
+                    cancel = self.verify_stop_event()
+                    if cancel:
+                        break
+                    votes = self.votes[idx]
+                    vote, signature = votes[1], votes[2]
+                    int_signature = Exp.b64_to_dictionary(signature)['sign']
+                    dict_vote = Exp.b64_to_dictionary(vote)
+                    vote_available_to_be_verified = str((dict_vote['alpha'], dict_vote['betha']))
+                    verifier = BSV.BlindSignatureVerifier(self.public_key)
+                    is_valid = "Válido" if verifier.verify(int_signature, vote_available_to_be_verified) else "Inválido"
+
+                    # Color del texto de la tabla en función de la validez
+                    tag = "valid" if is_valid == "Válido" else "invalid"
+
+                    current_values = self.votes_table.item(item_id, "values")
+                    updated_values = current_values[:-1] + (is_valid,)
+                    self.votes_table.item(item_id, values=updated_values, tags=(tag,))
+                    # Mantiene enfocada la última fila has
+                    self.votes_table.selection_set(item_id)  # Selecciona la fila
+                    self.votes_table.see(item_id)  # Se desplaza para mostrarla
+
+                    progress = actual_progress + ((idx + 1) * 100 / total_records)
+                    if (idx + 1) == total_votes:
+                        self.votes_table.selection_remove(item_id)
+                    progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
+
+                if cancel:
+                    # Limpia datos pasados de la tabla de preconteo
+                    for row in self.pre_count_table.get_children():
+                        self.pre_count_table.delete(row)
+
+                    # Limpia datos pasados de la tabla de votos
+                    for row in self.votes_table.get_children():
+                        self.votes_table.delete(row)
+
+                    self.start_verification_button.config(state="normal")
+                    self.vault_verification_result_label.grid_remove()
+                    messagebox.showinfo("Atención", "Proceso cancelado por el usuario.")
+
+                else:
+                    # Al finalizar debe habilitar el boton para continuar
+                    if self.is_vault_valid:
+                        self.goto_mix_button.config(state='normal')
+                        self.notebook.tab(1, state='normal')
+                        self.widget_containers['vault_container']['button'].configure(state='disabled')
+                        self.widget_containers['vault_sign_container']['button'].configure(state='disabled')
+                        self.widget_containers['puk_signature_container']['button'].configure(state='disabled')
+                    else:
+                        # Casos cuando la firma de la base de datos no es válida
+                        # Consideraciones iniciales
+                        # El nombre de la bóveda no fue modificado
+                        # La bóveda es correcta (no es una bóveda de otra sesión)
+                        # La firma es correcta (el archivo de firma se obtuvo de la bóveda importada)
+                        # Se está usando la clave de verificación correcta
+                        # Caso 1: Preconteo y votos íntegros: Faltan o sobran votos
+                        # 1. Pueden faltar votos si se borró el par voto-firma
+                        # 2. Pueden sobrar votos si se usaron los mismos registros de la tabla para crear más registros
+                        #       (copiando el par voto-firmay agregandolo como un nuevo registro)
+                        # Resultado esperado: El preconteo y el conteo no deberían coincidir
+
+                        # Caso 2: Preconteo corrupto y votos íntegros
+                        # En esta situación, se puede estar también cumpliendo el caso 1, pero no hay forma de determinarlo
+                        # Basta con un solo registro de preconteo corrupto para que ya no se pueda comprobar el numero de
+                        # votos a favor para el candidato del registro afectado
+
+                        # Caso 3: Preconteo íntegro y votos corruptos
+                        # Si el preconteo es íntegro, se pueden obtener los resultados pero generaría desconfianza la falta
+                        # integridad en los votos
+
+                        # Caso 4: Preconteo corrpto y votos corruptos
+                        # Nada sirve
+
+                        # En cualquiera de los casos, no conviene proceder
+                        messagebox.showerror("Firma inválida", "La firma de la bóveda es inválida, "
+                                                               "el proceso no puede continuar.")
 
         except Exception as e:
             messagebox.showerror("Error al insertar los registros de la base de datos:", f"{e}")
         finally:
             progress_window.destroy()
+            if empty_flag:
+                messagebox.showwarning("Bóveda vacía", "No se encontraron votos.")
 
     def update_progress(self, progress_bar, percentage_label, progress):
         progress_bar['value'] = progress
@@ -754,53 +985,75 @@ class Interface:
         tk.Button(btn_frame, text="Cancelar", command=confirm_dialog.destroy).pack(side="right", padx=5)
 
     def load_shares_and_recover_secret(self):
-        print(f"Before: {self.shares}")
-        self.reconstruct_button.configure(state='disabled')
+        self.widget_containers['prk_hash_container']['button'].configure(state='disabled')
 
         def task():
             try:
                 # Cargar cada archivo .pem y convertirlo a diccionario
-                print(self.shares_paths)
                 for path in self.shares_paths:
                     share = Exp.import_key(path)
-                    print(share)
                     self.shares.append(share)
 
-                print(self.shares)
                 recovery_component = KRC(self.shares)
                 self.secret = recovery_component.recover_secret()
-                print(self.secret)
+                if isinstance(self.secret, str):
+                    self.secret = ast.literal_eval(self.secret)
 
-                self._root.after(
-                    0,
-                    lambda: messagebox.showinfo(
-                        "Éxito",
-                        "Clave reconstruida exitosamente."
+                # Comprobar hash
+                result = self.verify_hash(self.secret)
+                if result:
+                    self._root.after(
+                        0,
+                        lambda: messagebox.showinfo(
+                            "Éxito",
+                            "Clave reconstruida exitosamente."
+                        )
                     )
-                )
+                    self.reconstruct_button.config(state='disabled')
+                    self.widget_containers['prk_hash_container']['button'].configure(state='disabled')
+                    self.import_share_button.config(state='disabled')
 
-                self._root.after(0, lambda: self.create_progress_window(
-                    target_function=self.load_plain_pre_count_data,
-                    win_title="Insertando datos en la tabla"
-                ))
+                    self._root.after(0, lambda: self.create_progress_window(
+                        target_function=self.load_plain_pre_count_data,
+                        win_title="Insertando datos en la tabla"
+                    ))
+
+                else:
+                    self.set_default_shares_table()
+                    self._root.after(
+                        0,
+                        lambda: messagebox.showwarning(
+                            "Error de hash",
+                            "Se importaron fragmentos de una clave incorrecta.\n"
+                        )
+                    )
+            except UnicodeDecodeError as e:
+                self.set_default_shares_table()
+                print(f"{e}\n{traceback.format_exc()}")
+                messagebox.showerror("Error de decodificación", "¿Está usando fragmentos de distintas claves?")
+
             except Exception as e:
-                self._root.after(
-                    0,
-                    lambda: messagebox.showerror(
-                        "Error",
-                        f"Se produjo un error al recuperar el secreto: {e}"
+                self.set_default_shares_table()
+                print(traceback.format_exc())
+                if str(e) == "invalid points":
+                    messagebox.showerror("Error", "Los fragmentos no son compatibles entre sí."
+                                                  "¿Está usando fragmentos de distintas claves?")
+                    self.set_default_shares_table()
+
+                else:
+                    self._root.after(
+                        0,
+                        lambda: messagebox.showerror(
+                            "Error",
+                            "No se pudo recuperar la clave privada."
+                        )
                     )
-                )
 
         # Ejecuta en un hilo separado
         threading.Thread(target=task, daemon=True).start()
 
     def load_plain_pre_count_data(self, progress_window, info_label, progress_bar, percentage_label):
         try:
-            if isinstance(self.secret, str):
-                self.secret = ast.literal_eval(self.secret)
-                print(f"Secreto convertido de tipo str a {type(self.secret)}")
-
             total_candidates = len(self.pre_count)
 
             # Limpia los datos cargados anteriormente
@@ -836,7 +1089,7 @@ class Interface:
                     self.plain_pre_count_table.selection_remove(row_id)
 
             accept_pre_count_container = tk.Frame(self.pre_count_frame, bg="#F0F0F0")
-            accept_pre_count_container.grid(row=6, column=0, pady=10, padx=500)
+            accept_pre_count_container.grid(row=self.accept_pre_count_container_row, column=0, pady=10, padx=500)
             accept_pre_count_container.grid_columnconfigure(0, weight=3)
             accept_pre_count_container.grid_columnconfigure(1, weight=1)
             accept_pre_count_container.grid_columnconfigure(2, weight=1)
@@ -870,20 +1123,21 @@ class Interface:
             progress_window.after(0, progress_window.destroy)
 
         except Exception as e:
-            messagebox.showerror("Error al descifrar el preconteo", f": {e}")
+            messagebox.showerror("Error al descifrar el preconteo:", f":{e}\n{traceback.format_exc()}")
+
             progress_window.after(0, progress_window.destroy)
 
     def pre_count_accepted(self):
         messagebox.showinfo("", "Conteo finalizado.")
-        self.accept_pre_count_button.config(state='disabled')
-        self.deny_pre_count_button.config(state='disabled')
+        self.accept_pre_count_button.destroy()
+        self.deny_pre_count_button.destroy()
         self.accept_pre_count_label.config(text='Conteo finalizado.')
 
 
     def create_decrypt_tab_and_load_plain_votes_data(self, progress_window, info_label, progress_bar, percentage_label):
         try:
-            self.accept_pre_count_button.config(state='disabled')
-            self.deny_pre_count_button.config(state='disabled')
+            self.accept_pre_count_button.destroy()
+            self.deny_pre_count_button.destroy()
             self.accept_pre_count_label.config(text='Conteo finalizado.')
             # Se crea el tab de descifrado
             self.decrypt_frame = tk.Frame(self.notebook, bg="#F0F0F0")
@@ -980,54 +1234,46 @@ class Interface:
                 self.plain_votes_table.delete(row)
 
             for idx, vote in enumerate(self.votes):
-                _id, vote, signature = vote[0], vote[1], vote[2]
-
-                int_signature = Exp.b64_to_dictionary(signature)['sign']
                 dict_vote = Exp.b64_to_dictionary(vote)
                 vote_available_to_be_decrypted = (dict_vote['alpha'], dict_vote['betha'])
-                vote_available_to_be_verified = str(vote_available_to_be_decrypted)
-                verifier = BSV.BlindSignatureVerifier(self.public_key)
-                is_valid = "Válido" if verifier.verify(int_signature, vote_available_to_be_verified) else "Inválido"
 
                 dec = Decryptor(self.secret["P"], self.secret["G"], self.secret["PrK"])
                 int_plain_vote = dec.decipher_std(vote_available_to_be_decrypted)
                 plain_vote = Exp.int_to_string(int_plain_vote)
 
-                if is_valid == "Válido":
-                    # Insertar el registro con la etiqueta correspondiente
-                    if self.dynamic_plain_votes_table_height < 12:
-                        self.dynamic_plain_votes_table_height += 1
-                        self.plain_votes_table.configure(height=self.dynamic_plain_votes_table_height)
+                if self.dynamic_plain_votes_table_height < 15:
+                    self.dynamic_plain_votes_table_height += 1
+                    self.plain_votes_table.configure(height=self.dynamic_plain_votes_table_height)
+                    self._root.update_idletasks()
+                row_id = self.plain_votes_table.insert("", "end", values=((idx+1), plain_vote))
+                self.plain_votes_table.selection_set(row_id)
+                self.plain_votes_table.see(row_id)
+
+                # Se suma el contador del candidato votado
+                self.counter_of_votes_in_favor_dict[f"{plain_vote}"] += 1
+
+                for i, _list in enumerate(self.count_of_votes_in_favor_label):
+                    # Si el candidato de la lista es igual al candidato del voto
+                    if _list[0] == plain_vote:
+                        # Resalta el candidato votado en esta iteracion
+                        _list[1].config(font=self.title_font)
+                        # Configura el label de esa lista con el valor de su contador de votos a favor
+                        _list[2].config(
+                            text=f"{self.counter_of_votes_in_favor_dict[f"{plain_vote}"]}",
+                            font=self.title_font
+                        )
+                        # Actualiza la interfaz
                         self._root.update_idletasks()
-                    row_id = self.plain_votes_table.insert("", "end", values=(_id, plain_vote))
-                    self.plain_votes_table.selection_set(row_id)
-                    self.plain_votes_table.see(row_id)
-
-                    # Se suma el contador del candidato votado
-                    self.counter_of_votes_in_favor_dict[f"{plain_vote}"] += 1
-
-                    for i, _list in enumerate(self.count_of_votes_in_favor_label):
-                        # Si el candidato de la lista es igual al candidato del voto
-                        if _list[0] == plain_vote:
-                            # Resalta el candidato votado en esta iteracion
-                            _list[1].config(font=self.title_font)
-                            # Configura el label de esa lista con el valor de su contador de votos a favor
-                            _list[2].config(
-                                text=f"{self.counter_of_votes_in_favor_dict[f"{plain_vote}"]}",
-                                font=self.title_font
-                            )
-                            # Actualiza la interfaz
-                            self._root.update_idletasks()
-                            # Espera un segundo
-                            time.sleep(1)
-                            # Deja de resaltar la fila del candidato votado
-                            _list[1].config(font=self.subtitle_font)
-                            _list[2].config(font=self.subtitle_font)
-                            # Espera 100ms para dejar que se aprecie como vuelve a su estado original
-                            # (por si el candidato tiene votos seguidos)
-                            time.sleep(100 / 1000)
-                            # Como ya encontro el label indicado, break
-                            break
+                        # Espera un segundo
+                        time.sleep(400/1000)
+                        # Deja de resaltar la fila del candidato votado
+                        _list[1].config(font=self.subtitle_font)
+                        _list[2].config(font=self.subtitle_font)
+                        # Espera 100ms para dejar que se aprecie como vuelve a su estado original
+                        # (por si el candidato tiene votos seguidos)
+                        time.sleep(100/1000)
+                        # Como ya encontro el label indicado, break
+                        break
 
                 progress = (idx + 1) * 100 / total_votes
                 progress_window.after(0, self.update_progress, progress_bar, percentage_label, progress)
@@ -1138,58 +1384,34 @@ class Interface:
         return table
 
     def load_share_data(self, i):
-
         my_share = Exp.import_key(self.shares_paths[i])
         my_list = [my_share]
-        #print(my_share)
-        print(f"antes: {my_list}")
         krc = KRC(my_list)
-        self.req_shares = my_share["Rs"]
+
+        if self.req_shares is None:
+            self.req_shares = krc.get_required_shares(krc)
+
+        else:
+            if self.req_shares != my_share["Rs"]:
+                messagebox.showwarning("Fragmento incompatible",
+                                       "El fragmento importado no es compatible con el anterior.")
+                return
+
         if len(self.shares_paths) >= self.req_shares:
-            self.reconstruct_button.configure(state="normal")
+            self.widget_containers["prk_hash_container"]["button"].configure(state="normal")
         share_number = my_share["x"]
 
-        item_name = tk.Label(
-            self.shares_container,
-            bg="white",
-            font=self.subtitle_font,
-            text=self.shares_paths[i],
-        )
-        item_name.grid(row=i+1, column=0, sticky="nsew")
+        for row in self.share_name_id_table.get_children():
+            self.share_name_id_table.delete(row)
 
-        item_id = tk.Label(
-            self.shares_container,
-            bg="white",
-            font=self.subtitle_font,
-            text=share_number,
-        )
-        item_id.grid(row=i + 1, column=1, sticky="nsew")
+        for share_name in self.shares_paths:
+            row_id = self.share_name_id_table.insert("", "end", values=(share_name, share_number))
+            self.share_name_id_table.selection_set(row_id)
+            self.share_name_id_table.see(row_id)
 
-        #if i==0:
-        req_shares_label = tk.Label(
-            self.shares_container,
-            bg="white",
-            font=self.subtitle_font,
-            text=self.req_shares,
-        )
-
-        total_shares_label = tk.Label(
-            self.shares_container,
-            bg="white",
-            font=self.subtitle_font,
-            text=self.shares_paths[0][-5]
-        )
-
-        imported_shares_label = tk.Label(
-            self.shares_container,
-            bg="white",
-            font=self.subtitle_font,
-            text=len(self.shares_paths),
-        )
-
-        req_shares_label.grid(row=1, rowspan=len(self.shares_paths), column=2, sticky="nsew")
-        total_shares_label.grid(row=1, rowspan=len(self.shares_paths), column=3, sticky="nsew")
-        imported_shares_label.grid(row=1, rowspan=len(self.shares_paths), column=4, sticky="nsew")
+        self.numbers_shares["rs"].configure(text=self.req_shares)
+        self.numbers_shares["ts"].configure(text=self.shares_paths[i][-5])
+        self.numbers_shares["is"].configure(text=len(self.shares_paths))
 
     def create_progress_window(self, target_function, win_title="Cargando", win_width=500, win_height=100,
                                info_label=""):
@@ -1218,13 +1440,24 @@ class Interface:
             target=self.try_except_launcher,
             args=(target_function, progress_window, info_label, progress_bar, percentage_label)
         )
+
+        # Acción al cerrar la ventana: detener el hilo
+        progress_window.protocol("WM_DELETE_WINDOW", lambda: self.cancel_thread(load_thread))
+
+        # Limpia el evento por si se activó anteriormente
+        self.stop_event.clear()
+        # Se lanza la tarea en un hilo independiente
         load_thread.start()
+
+    def cancel_thread(self, thread):
+        # Detener el hilo mediante la señal
+        self.stop_event.set()
 
     def try_except_launcher(self, target_function, progress_window, info_label, progress_bar, percentage_label):
         try:
             target_function(progress_window, info_label, progress_bar, percentage_label)
         except Exception as e:
-            info_label.config(text=f"Error: {e}")
+            print(e)
         finally:
             progress_window.after(0, progress_window.destroy)
 
@@ -1250,3 +1483,124 @@ class Interface:
             return True, greater_count, winner[0]
         else:
             return False, greater_count, winner
+
+    def get_empty_space(self, parent, bg):
+        empty_space = tk.Label(parent, bg=bg)
+        return empty_space
+
+    def verify_hash(self, key):
+        # Se crea el diccionario con comillas simples porque así se guarda en el módulo de generación de claves
+        key_formated = {'P':int(key["P"]), 'G':int(key["G"]), 'PrK':int(key["PrK"])}
+        key_resume_hex = hashlib.sha3_256(str(key_formated).encode('utf-8')).hexdigest()
+        resume_reference_dict = Exp.import_key(self.prk_hash_path)
+        if key_resume_hex == resume_reference_dict["digesto"]:
+            return True
+        else:
+            return False
+
+    def verify_stop_event(self):
+        if self.stop_event.is_set():
+            return True
+        else:
+            return False
+
+    def set_default_shares_table(self):
+        for row in self.share_name_id_table.get_children():
+            self.share_name_id_table.delete(row)
+        for k in self.numbers_shares:
+            self.numbers_shares[k].configure(text="")
+        self.req_shares = None
+        self.shares_paths.clear()
+        self.shares.clear()
+        self.reconstruct_button.configure(state='disabled')
+        self.prk_hash_path = None
+        self.widget_containers["prk_hash_container"]["button"].configure(state="disabled")
+        self.widget_containers["prk_hash_container"]["file_path_label"].configure(
+            text=self.prk_hash_request_default,
+            fg="red"
+        )
+
+    def do_mix(self):
+        puk_encrption = Exp.import_key(self.puk_cipher_path)
+
+        if isinstance(puk_encrption, str):
+            puk_encrption = ast.literal_eval(puk_encrption)
+
+        for i in range(3):
+            for row in self.mix_table[i].get_children():
+                self.mix_table[i].delete(row)
+
+        self.widget_containers["puk_cipher_container"]["button"].configure(state="disabled")
+
+        self._root.update_idletasks()
+        if self.votes is not None:
+            votes_before_mixed = []
+            for vote in self.votes:
+                votes_before_mixed.append(vote[1])
+            for i, vote in enumerate(votes_before_mixed):
+                # Convertimos la lista de votos a un formato compatible para el recifrado
+                dict_vote = Exp.b64_to_dictionary(vote)
+                vote_available_to_be_reciphered = (dict_vote['alpha'], dict_vote['betha'])
+                votes_before_mixed[i] = vote_available_to_be_reciphered
+
+            for i in range(3):
+                # Se obtienen los votos mezclados
+                mixer = FMN(puk_encrption["P"], puk_encrption["G"], puk_encrption["PuK"])
+                mixed_votes = mixer.permute(votes_before_mixed.copy())
+
+                for idx in range(len(mixed_votes)):
+                    if random.getrandbits(1) == 1: # Si el bit aleatorio es 1 pide prueba de mezclado
+                        print(f"Verificando voto {idx} de la mezcla {i+1}.")
+                        # Pregunta por los factores usados para obtener el voto idx de la lista de votos mezclados
+                        factors = mixer.challenge(mixed_votes[idx][0])
+                        permutation_fac = factors[0]
+                        re_encryption_fact = factors[1]
+                        input_vote = votes_before_mixed[permutation_fac]
+                        output_vote = mixed_votes[idx]
+                        # Comprueba si el recifrado del voto no mezclado en la posicion del factor de permutacion
+                        #       genera el voto recibido
+                        is_mix_valid = self.do_mix_proof(puk_encrption, input_vote, re_encryption_fact, output_vote)
+                        if not is_mix_valid:
+                            self.mixed_votes_not_approved_by_verifier.append({"idx": idx, "mix": i})
+                            print(f"Falló la prueba de mezclado para el voto {idx} de la mezcla número {i + 1}")
+
+                for j, vote in enumerate(mixed_votes):
+                    vote = Exp.dictionary_to_b64(vote)
+                    row_id = self.mix_table[i].insert("", "end", values=(vote,))
+                    self.mix_table[i].selection_set(row_id)  # Selecciona la fila
+                    self.mix_table[i].see(row_id)  # Se desplaza para mostrarla
+                    self._root.update_idletasks()
+                    self.mix_table[i].selection_remove(row_id)
+                votes_before_mixed = mixed_votes
+
+            self.votes.clear()
+            for vote in votes_before_mixed:
+                ctext_j = {"alpha": vote[0], "betha": vote[1]}
+                self.votes.append(Exp.dictionary_to_b64(ctext_j))
+
+            self.goto_pre_count_button.configure(state="normal")
+            self.notebook.tab(2, state="normal")
+            if len(self.mixed_votes_not_approved_by_verifier) == 0:
+                messagebox.showinfo("Mezcla exitosa", "Todas las mezclas verificadas fueron aprobadas.")
+
+            else:
+                votos_mal_mezclados = "\n".join(map(str, self.mixed_votes_not_approved_by_verifier))
+                messagebox.showwarning("Advertencia", "La prueba de mezclado fue inválida para los votos:\n"
+                                                      f"{votos_mal_mezclados}")
+
+    @staticmethod
+    def do_mix_proof(puk_encrption, input_vote, k, output_vote):
+        mixer_verifier = FMN(puk_encrption["P"], puk_encrption["G"], puk_encrption["PuK"])
+        result, k = mixer_verifier.recipher(input_vote, k)
+        if result == output_vote:
+            #print("Prueba aprobada.")
+            return True
+        else:
+            print("Prueba reprobada.")
+            return False
+
+if __name__ == "__main__":
+    #root es la ventana
+    root = tk.Tk()
+    app = Interface(root)
+    root.mainloop()
