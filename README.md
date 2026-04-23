@@ -54,5 +54,4 @@ Cryptographic algorithms: ElGamal, Shamir Secret Sharing, Blind Signatures
 Programming language: Python 
 
 # 👨‍💻 Author
-Juan Carlos Garcia Jimenez
-Cristofer Montes Lozada
+Juan Carlos Garcia Jimenez & Cristofer Montes Lozada
